@@ -1,0 +1,5 @@
+# Exclude the entire bin folder
+bin/
+
+# Exclude Constants.java file
+src/me/catzy44/Constants.java
