@@ -1,2 +1,5 @@
-bin/me/catzy44/Constants.class
-src/me/catzy44/Constants.class
+# Exclude the entire bin folder
+bin/
+
+# Exclude Constants.java file
+src/me/catzy44/Constants.java
