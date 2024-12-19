@@ -27,16 +27,14 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import me.catzy44.Constants;
 import me.catzy44.EndiLauncher;
 import me.catzy44.struct.accounts.MinecraftProfile.Type;
 import me.catzy44.utils.IExploreUtil;
 import me.catzy44.utils.JsonUtility;
 import me.catzy44.utils.JsonUtility.ReqType;
-import me.catzy44.utils.Utils;
 
 public class Microsoft {
-	String clientId = "c506971c-5daf-47e2-9f8a-0c79e3d5f5b0";
-	String secret = "a~W7Q~A246WzWvyqGW4pa.3cmRzDvBSE2k9Yy";
 	private Gson gson = new Gson();
 	String redUrl = "http://localhost:22420/login";
 	
@@ -230,8 +228,8 @@ public class Microsoft {
 	private void refreshToken() throws Exception {
 		Map<String, String> q = new HashMap<String, String>();
 
-		q.put("client_id", clientId);
-		q.put("client_secret", secret);
+		q.put("client_id", Constants.MICROSOFT_CLIENT_ID);
+		q.put("client_secret", Constants.MICROSOFT_SECRET);
 		q.put("refresh_token", refreshToken);
 		q.put("grant_type", "refresh_token");
 		q.put("redirect_uri", redUrl);
@@ -250,8 +248,8 @@ public class Microsoft {
 	private void stage2() throws Exception {
 		Map<String, String> q = new HashMap<String, String>();
 
-		q.put("client_id", clientId);
-		q.put("client_secret", secret);
+		q.put("client_id", Constants.MICROSOFT_CLIENT_ID);
+		q.put("client_secret", Constants.MICROSOFT_SECRET);
 		q.put("code", code);
 		q.put("grant_type", "authorization_code");
 		q.put("redirect_uri", redUrl);
@@ -276,7 +274,7 @@ public class Microsoft {
 		Thread.sleep(1000);
 		stage1Str = "https://login.live.com/oauth20_authorize.srf" + 
 				"?client_id=" + 
-				clientId + 
+				Constants.MICROSOFT_CLIENT_ID + 
 				"&response_type=code" +
 				"&redirect_uri=" +
 				redUrl + 
