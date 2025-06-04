@@ -7,7 +7,7 @@ It's also capable od updating itself, updating gamefiles, etc.
 
 Written in 2021, stopped working on it in 2022 as my server has been closed because of lack of my time.
 
-<img src="https://i.imgur.com/i8v4tMC.png"/>
+<img src="https://i.imgur.com/XJjgS4z.png"/>
 <img src="https://i.imgur.com/jZLzsbh.png"/>
 <img src="https://i.imgur.com/0SHO38j.png"/>
 <img src="https://i.imgur.com/zvFMT6I.png"/>
