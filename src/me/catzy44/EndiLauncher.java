@@ -11,7 +11,7 @@ import me.catzy44.tools.Starter;
 import me.catzy44.tools.Updater;
 import me.catzy44.tools.net.EndiAPI;
 import me.catzy44.ui.creators.GameVersionCreator;
-import me.catzy44.ui.creators.UserAccountCreator;
+import me.catzy44.ui.creators.account.UserAccountCreator;
 import me.catzy44.user.UserProfile;
 import me.catzy44.user.UserProfileManager;
 import me.catzy44.utils.Args;
@@ -43,11 +43,17 @@ public class EndiLauncher {
 			GameInstallationManager.init();
 			
 			Interface.setActiveUserProfile(UserProfileManager.getActiveProfile());
+			Interface.setActiveGameInstallation(GameInstallationManager.getActive());
 			
 			Interface.show(true);
 			
 			Updater.killUpdaterIfJustUpdated(args);
-			Updater.init(args);
+			try {
+				Updater.init(args);
+			} catch (Exception e) {
+				Interface.printToConsole("<font color=orange>Nie można sprawdzić aktualizacji launchera.</font>");
+				e.printStackTrace();
+			}
 			
 			Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
 				@Override

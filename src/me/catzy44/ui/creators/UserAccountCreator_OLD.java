@@ -24,6 +24,8 @@ import me.catzy44.struct.accounts.Microsoft;
 import me.catzy44.struct.accounts.MinecraftProfile;
 import me.catzy44.struct.accounts.MinecraftProfile.Type;
 import me.catzy44.ui.TransparentPanelFixUI;
+import me.catzy44.ui.creators.account.MicrosoftLoginUI;
+import me.catzy44.ui.creators.account.MojangLoginUI;
 import me.catzy44.ui.listeners.AButtonMouseListener;
 import me.catzy44.ui.listeners.ButtonMouseListener;
 import me.catzy44.ui.listeners.FrameDragListener;

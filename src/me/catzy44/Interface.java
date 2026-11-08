@@ -27,6 +27,7 @@ import java.beans.PropertyChangeListener;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,7 +40,6 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
-import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -87,10 +87,10 @@ import me.catzy44.ui.JMultilineLabel;
 import me.catzy44.ui.PlaceholderTextField;
 import me.catzy44.ui.TransparentPanelFixUI;
 import me.catzy44.ui.creators.GameVersionCreator;
-import me.catzy44.ui.creators.MicrosoftLoginUI;
-import me.catzy44.ui.creators.MojangLoginUI;
-import me.catzy44.ui.creators.UserAccountCreator;
 import me.catzy44.ui.creators.UserProfileNameChange;
+import me.catzy44.ui.creators.account.MicrosoftLoginUI;
+import me.catzy44.ui.creators.account.MojangLoginUI;
+import me.catzy44.ui.creators.account.UserAccountCreator;
 import me.catzy44.ui.listeners.AButtonMouseListener;
 import me.catzy44.ui.listeners.ButtonMouseListener;
 import me.catzy44.ui.listeners.FrameDragListener;
@@ -1102,30 +1102,24 @@ public class Interface {
 		consoleSaveButton = new JButton(new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/save.png"))));
 		consoleSaveButton.addActionListener(new ActionListener() {
 			public void actionPerformed(ActionEvent arg0) {
-				new Thread(new Runnable() {
-					public void run() {
-						//JnaFileChooser chooser = new JnaFileChooser();
-						JFileChooser chooser = new JFileChooser();
-						//chooser.addFilter("Plik tekstowy", "txt");
-						//if (chooser.showSaveDialog(Window.getWindows()[Window.getWindows().length - 1])) {
-						int returnValue = chooser.showSaveDialog(Interface.getFrame());
-						if (returnValue == JFileChooser.APPROVE_OPTION) {
-							File f = chooser.getSelectedFile();
-							if (!f.getAbsolutePath().substring(f.getAbsolutePath().lastIndexOf(".") + 1).equals("txt")) {
-								f = new File(f.getAbsolutePath() + ".txt");
-							}
-							try {
-								Logger.save();
-								Files.copy(Logger.getFile().toPath(), f.toPath());
-								DialogUtil.showConfirmDialog("Pomyślnie zapisano plik z logiem.");
-							} catch (IOException e) {
-								e.printStackTrace();
-							}
-						}
-						chooser = null;
-						System.gc();
-					}
-				}).start();
+				JnaFileChooser chooser = new JnaFileChooser();
+				chooser.setTitle("Zapisz log launchera");
+				chooser.setDefaultFileName("endi-launcher-log.txt");
+				chooser.addFilter("Plik tekstowy", "txt");
+				if (!chooser.showSaveDialog(Interface.getFrame())) {
+					return;
+				}
+				File file = chooser.getSelectedFile();
+				if (!file.getName().toLowerCase().endsWith(".txt")) {
+					file = new File(file.getAbsolutePath() + ".txt");
+				}
+				try {
+					Logger.save();
+					Files.copy(Logger.getFile().toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+					DialogUtil.showConfirmDialog("Pomyślnie zapisano plik z logiem.");
+				} catch (IOException e) {
+					DialogUtil.showConfirmDialog("Nie udało się zapisać logu: " + e.getMessage());
+				}
 			}
 		});
 		consoleSaveButton.setOpaque(false);
@@ -1555,6 +1549,14 @@ public class Interface {
 		JButton btnNewButton_8 = new JButton("Otwórz folder modów");
 		btnNewButton_8.setBounds(10, 89, 150, 23);
 		forgeSettings.add(btnNewButton_8);
+		btnNewButton_8.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				GameInstallation gi = GameInstallationManager.getActive();
+				if (gi != null) {
+					Utils.openDirectory(gi.getModsDirectory());
+				}
+			}
+		});
 		btnNewButton_8.setContentAreaFilled(false);
 		btnNewButton_8.setBackground(buttonsBg);
 		btnNewButton_8.setForeground(buttonsText);
@@ -1616,6 +1618,14 @@ public class Interface {
 		JButton btnNewButton_7 = new JButton("Otwórz folder modów");
 		btnNewButton_7.setBounds(10, 89, 150, 23);
 		fabricSettings.add(btnNewButton_7);
+		btnNewButton_7.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				GameInstallation gi = GameInstallationManager.getActive();
+				if (gi != null) {
+					Utils.openDirectory(gi.getModsDirectory());
+				}
+			}
+		});
 		btnNewButton_7.setContentAreaFilled(false);
 		btnNewButton_7.setBackground(buttonsBg);
 		btnNewButton_7.setForeground(buttonsText);
@@ -1708,6 +1718,14 @@ public class Interface {
 		JButton btnNewButton_2 = new JButton("Otwórz folder");
 		btnNewButton_2.setBounds(10, 44, 120, 23);
 		asdf.add(btnNewButton_2);
+		btnNewButton_2.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				GameInstallation gi = GameInstallationManager.getActive();
+				if (gi != null) {
+					Utils.openDirectory(gi.getGameDirectory());
+				}
+			}
+		});
 		btnNewButton_2.setContentAreaFilled(false);
 		btnNewButton_2.setBackground(buttonsBg);
 		btnNewButton_2.setForeground(buttonsText);
@@ -2046,10 +2064,16 @@ public class Interface {
 	/* ACCOUNTS CARD */
 
 	private static void accountSelected(String newSel) {
+		if (newSel == null) {
+			return;
+		}
 		if (newSel.equals("+ Dodaj nowy profil")) {
 			// changing selected item will execute accountSelected function again so no need
 			// to re-set everything.
-			accountsCB.setSelectedItem(UserProfileManager.getActiveProfile().getProfileName());
+			UserProfile activeProfile = UserProfileManager.getActiveProfile();
+			if (activeProfile != null) {
+				accountsCB.setSelectedItem(activeProfile.getProfileName());
+			}
 			new Thread(() -> {
 				UserAccountCreator.showInterface();
 			}).start();
@@ -2080,6 +2104,8 @@ public class Interface {
 
 	public static void setActiveUserProfile(UserProfile up) {
 		if (up == null) {
+			reloadProfileSelector();
+			reloadInstallationSelector();
 			return;
 		}
 
@@ -2112,29 +2138,42 @@ public class Interface {
 
 		btnZalogujMojang.setText((accType == Type.MOJANG && ak.getStatus() == Status.LOGGED_IN) ? "Wyloguj" : "Zaloguj się");
 		btnZalogujMicrosoft.setText((accType == Type.MICROSOFT && ak.getStatus() == Status.LOGGED_IN) ? "Wyloguj" : "Zaloguj się");
+		setSkinChangingEnabled(accType != Type.NONPREMIUM);
 
 		SkinPreview.prepareSkinPreviewLabels(SkinPreview.SKIN_DYNAMIC, panel_5);
 		up.getSkin().showSkin();
 
-		ItemListener al[] = extractItemListeners(accountsCB);
+		reloadProfileSelector();
+	}
+
+	private static void setSkinChangingEnabled(boolean enabled) {
+		btnSkinZNicku.setEnabled(enabled);
+		btnSkinZPliku.setEnabled(enabled);
+		btnSkinDomyslny.setEnabled(enabled);
+		btnLosowySkin.setEnabled(enabled);
+	}
+
+	/** Keeps the profile dropdown usable even before its first profile exists. */
+	public static void reloadProfileSelector() {
+		if (accountsCB == null) {
+			return;
+		}
+		ItemListener[] listeners = extractItemListeners(accountsCB);
 		accountsCB.removeAllItems();
-		for (UserProfile gis : UserProfileManager.getProfiles()) {
-			accountsCB.addItem(gis.getProfileName());
-			if (gis == up) {
-				accountsCB.setSelectedItem(gis.getProfileName());
+		UserProfile activeProfile = UserProfileManager.getActiveProfile();
+		for (UserProfile profile : UserProfileManager.getProfiles()) {
+			accountsCB.addItem(profile.getProfileName());
+			if (profile == activeProfile) {
+				accountsCB.setSelectedItem(profile.getProfileName());
 			}
 		}
 		accountsCB.addItem("+ Dodaj nowy profil");
-		insertItemListeners(accountsCB,al);
+		insertItemListeners(accountsCB, listeners);
 	}
 
 	public static void changeActiveUserProfileType(Type type) {
 		UserProfile up = UserProfileManager.getActiveProfile();
-		up.getAk().setType(type);
-		up.getAk().logout();
-		// up.resetSkin();
-		SkinPreview.loadSkinPreview(null);
-		setActiveUserProfile(up);
+		UserAccountCreator.changeExistingProfile(up, type);
 	}
 
 	public static void userProfileLoginLogout() {
@@ -2253,10 +2292,16 @@ public class Interface {
 	}
 
 	private static void installationSelected(String newSel) {
+		if (newSel == null) {
+			return;
+		}
 		if (newSel.equals("+ Dodaj instalację")) {
 			// changing selected item will execute accountSelected function again so no need
 			// to re-set everything.
-			installationsCB.setSelectedItem(GameInstallationManager.getActive().getName());
+			GameInstallation activeInstallation = GameInstallationManager.getActive();
+			if (activeInstallation != null) {
+				installationsCB.setSelectedItem(activeInstallation.getName());
+			}
 			new Thread(() -> {
 				// UserAccountCreator.showInterface();
 				GameVersionCreator.showInterface();
@@ -2276,7 +2321,8 @@ public class Interface {
 
 	public static void setActiveGameInstallation(GameInstallation gi) {
 		if (gi == null) {
-			return;// TODO
+			reloadInstallationSelector();
+			return;
 		}
 
 		chkSetSelected(showSnapshotsChb, gi.showSnapshots());
@@ -2299,18 +2345,27 @@ public class Interface {
 
 		switchCLCard(moddingApiSettings, ver.getModded().getString());
 
-		ItemListener[] al = extractItemListeners(installationsCB);
+		reloadInstallationSelector();
+		// new Exception().printStackTrace();
+		reloadVersions();
+	}
+
+	/** Keeps the installation dropdown usable even before its first installation exists. */
+	public static void reloadInstallationSelector() {
+		if (installationsCB == null) {
+			return;
+		}
+		ItemListener[] listeners = extractItemListeners(installationsCB);
 		installationsCB.removeAllItems();
-		for (GameInstallation gis : GameInstallationManager.getAll()) {
-			installationsCB.addItem(gis.getName());
-			if (gis == gi) {
-				installationsCB.setSelectedItem(gis.getName());
+		GameInstallation activeInstallation = GameInstallationManager.getActive();
+		for (GameInstallation installation : GameInstallationManager.getAll()) {
+			installationsCB.addItem(installation.getName());
+			if (installation == activeInstallation) {
+				installationsCB.setSelectedItem(installation.getName());
 			}
 		}
 		installationsCB.addItem("+ Dodaj instalację");
-		insertItemListeners(installationsCB,al);
-		// new Exception().printStackTrace();
-		reloadVersions();
+		insertItemListeners(installationsCB, listeners);
 	}
 
 	private static void loadFabricAddons() {

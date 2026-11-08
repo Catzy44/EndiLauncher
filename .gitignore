@@ -1,5 +1,9 @@
 # Exclude the entire bin folder
 bin/
 
+# Gradle build output and local state
+.gradle/
+build/
+
 # Exclude Constants.java file
 src/me/catzy44/Constants.java

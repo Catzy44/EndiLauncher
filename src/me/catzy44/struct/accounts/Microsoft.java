@@ -3,29 +3,30 @@ package me.catzy44.struct.accounts;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
-import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
-import java.io.UnsupportedEncodingException;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URISyntaxException;
-import java.net.URLDecoder;
-import java.nio.charset.Charset;
-import java.util.Date;
+import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.Map;
-import java.util.StringTokenizer;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.sun.jna.platform.win32.User32;
+import com.sun.jna.platform.win32.WinUser;
+import com.sun.jna.platform.win32.WinDef.HWND;
+import com.sun.jna.platform.win32.WinDef.LPARAM;
+import com.sun.jna.platform.win32.WinDef.WPARAM;
+
+import me.kotsu.microHTTPServer.HttpServer;
+import me.kotsu.microHTTPServer.HttpServerAction;
+import me.kotsu.microHTTPServer.HttpResponse;
 
 import me.catzy44.Constants;
 import me.catzy44.EndiLauncher;
@@ -271,7 +272,6 @@ public class Microsoft {
 
 	private void stage1() throws Exception {
 		startServer();
-		Thread.sleep(1000);
 		stage1Str = "https://login.live.com/oauth20_authorize.srf" + 
 				"?client_id=" + 
 				Constants.MICROSOFT_CLIENT_ID + 
@@ -279,210 +279,108 @@ public class Microsoft {
 				"&redirect_uri=" +
 				redUrl + 
 				"&scope=XboxLive.signin%20offline_access" + 
-				"&state=123456" + 
+				"&state=123456" +
 				"&prompt=select_account";
 		//Utils.openUrl(stage1Str);
 		//IExploreUtil.start(stage1Str, true, false, true, true, 440, 338+140,true);
-		IExploreUtil.start(stage1Str);
+        try {
+            IExploreUtil.start(stage1Str);
+            synchronized (callbackLock) {
+                while (code == null && callbackError == null && server != null) callbackLock.wait();
+                if (callbackError != null) throw new IOException(callbackError);
+                if (code == null) throw new IOException("Microsoft login cancelled");
+            }
+        } finally {
+            IExploreUtil.closeIfPossible();
+            if (code == null) stopServer();
+        }
+    }
 
-		while (code == null && !Thread.interrupted()) {
-			synchronized (server) {
-				server.wait(2000);
-			}
-		}
+    private final Object callbackLock = new Object();
+    private HttpServer server;
+    private volatile String code;
+    private String callbackError;
+    private ScheduledExecutorService serverKiller;
 
-		IExploreUtil.stop();
-		if(code == null) {
-			throw new Exception("Exception during microsoft login");
-		}
-		code = code.split("\\.")[2];
-		if(code == null) {
-			throw new Exception("Exception during microsoft login");
-		}
-	}
+    public void stopServer() {
+        synchronized (callbackLock) {
+            if (server != null) server.shutdown();
+            server = null;
+            if (serverKiller != null) serverKiller.shutdownNow();
+            serverKiller = null;
+            callbackLock.notifyAll();
+        }
+    }
 
-	private ServerSocket serverConnect;
-	private Thread server;
-	private String code = null;
-	
-	private boolean serverRunning = false;
-	private long lastServerAccess = -1;
-	private Thread serverKiller;
-	
-	public void stopServer() {
-		
-			serverRunning = false;
-			if (server != null) {
-				synchronized (server) {
-					server.notifyAll();
-				}
-			}
-			try {server.interrupt();} catch (Exception e) {}
-			try {serverConnect.close();} catch (Exception e) {}
-			server = null;
-			serverConnect = null;
-			try {serverKiller.interrupt();} catch (Exception e) {}
-			serverKiller = null;
-			//System.out.println("[server] stopped!");
-	}
+    public void startServer() throws IOException {
+        synchronized (callbackLock) {
+            if (server != null) return;
+            code = null;
+            callbackError = null;
+            HttpServer callbackServer = new HttpServer(22420);
+            callbackServer.addAction(new HttpServerAction("/login") {
+                @Override
+                public Object run(String method, String ip, String target, Map<String, String> getParams, BufferedReader in) throws Exception {
+                    if (!method.equals("GET")) return response("405 Method Not Allowed", "Expected GET");
+                    String receivedCode = getParams.get("code");
+                    String error = getParams.get("error");
+                    if ((receivedCode == null || receivedCode.isEmpty()) && error == null) {
+                        return response("400 Bad Request", "Missing authorization code");
+                    }
+                    synchronized (callbackLock) {
+                        if (server != callbackServer || code != null || callbackError != null) {
+                            return response("400 Bad Request", "Login is no longer pending");
+                        }
+                        if (error != null) {
+                        	callbackError = "Microsoft authorization failed: " + error;
+                        } else { 
+                        	code = receivedCode; 
+                        }
+                        // Allow the browser to load the success page before closing the listener.
+                        serverKiller.schedule(() -> {
+                            synchronized (callbackLock) {
+                                if (server == callbackServer) stopServer();
+                            }
+                        }, 10, TimeUnit.SECONDS);
+                        callbackLock.notifyAll();
+                    }
+                    if (error != null) return response("400 Bad Request", "Microsoft authorization failed");
+                    return new HttpResponse("307 Temporary Redirect", "text/html; charset=UTF-8", "Pomyślnie zalogowano".getBytes(StandardCharsets.UTF_8), Map.of("Location", "http://localhost:22420/success"));
+                }
+            });
+            addWebResource(callbackServer, "/success", "/files/web/success.html", "text/html; charset=UTF-8");
+            addWebResource(callbackServer, "/success.html", "/files/web/success.html", "text/html; charset=UTF-8");
+            addWebResource(callbackServer, "/image.png", "/files/web/image.png", "image/png");
+            callbackServer.startListening(InetAddress.getByName("127.0.0.1"));
+            server = callbackServer;
+            serverKiller = Executors.newSingleThreadScheduledExecutor(task -> {
+                Thread thread = new Thread(task, "Microsoft callback shutdown");
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+    }
 
-	public void startServer() {
-		lastServerAccess = System.currentTimeMillis();
-		if(serverRunning) {
-			//System.out.println("[server] server already running!");
-			return;
-		}
-		serverRunning = true;
-		//System.out.println("[server] started!");
-		serverKiller = new Thread(new Runnable() {
-			@Override
-			public void run() {
-				while(!Thread.interrupted() && serverRunning) {
-					if(System.currentTimeMillis()-lastServerAccess > 10000) {
-						if(code == null) {
-							lastServerAccess = System.currentTimeMillis();
-							continue;
-						}
-						stopServer();
-						break;
-					}
-				}
-			}
-		});
-		serverKiller.start();
-		server = new Thread(new Runnable() {
-			@Override
-			public void run() {
-				try {
-					serverRunning = true;
-					lastServerAccess = System.currentTimeMillis();
-					
-					serverConnect = new ServerSocket(22420);
+    private static HttpResponse response(String status, String message) {
+        return new HttpResponse(status, "text/plain; charset=UTF-8",
+                message.getBytes(StandardCharsets.UTF_8), Map.of());
+    }
 
-					while (!Thread.interrupted()) {
-						Socket socket = serverConnect.accept();
-						lastServerAccess = System.currentTimeMillis();
+    private static void addWebResource(HttpServer server, String path, String resource, String contentType) {
+        server.addAction(new HttpServerAction(path) {
+            @Override
+            public Object run(String method, String ip, BufferedReader in) throws IOException {
+                if (!method.equals("GET") && !method.equals("HEAD")) {
+                    return response("405 Method Not Allowed", "Expected GET or HEAD");
+                }
+                try (InputStream input = EndiLauncher.class.getResourceAsStream(resource)) {
+                    if (input == null) return response("404 Not Found", "Not found");
+                    return new HttpResponse("200 OK", contentType, input.readAllBytes(), Map.of());
+                }
+            }
+        });
+    }
 
-						new Thread(new Runnable() {
-							@Override
-							public void run() {
-								BufferedReader in = null;
-								PrintWriter pw = null;
-								BufferedOutputStream bos = null;
-								try {
-									in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-									pw = new PrintWriter(socket.getOutputStream());// for headers
-									bos = new BufferedOutputStream(socket.getOutputStream());// for data
-
-									String input = in.readLine();
-									if (input == null) {
-										return;
-									}
-									StringTokenizer parse = new StringTokenizer(input);
-									String method = parse.nextToken().toUpperCase(); // HTTP method
-									String path = parse.nextToken().toLowerCase(); // file
-									String fileRequested = path.split("\\?")[0];
-									
-									int retCode = 404;
-									byte[] response = null;
-									String redirect = null;
-									
-									if (!method.equals("GET") && !method.equals("HEAD") && !method.equals("POST")) {
-										// throwError(pw, bos, "501 Not Implemented");
-									}
-
-									x:
-									if (fileRequested.equals("/login")) {
-										Map<String, List<String>> x = splitQuery(path.replaceAll("\\/.*\\?", ""));
-										// String state = x.get("state").get(0);
-										code = x.get("code").get(0);
-										retCode = 307;
-										redirect = "http://localhost:22420/success";
-										response = "Pomyślnie zalogowano".getBytes(Charset.forName("UTF-8"));
-									} else {
-										if(fileRequested.contains("..")) {
-											retCode = 404;
-											response = new byte[0];
-											break x;
-										}
-										InputStream is = EndiLauncher.class.getResourceAsStream("/files/web"+fileRequested);
-										if(is == null) {
-											is = EndiLauncher.class.getResourceAsStream("/files/web" + fileRequested + ".html");
-											if (is == null) {
-												retCode = 404;
-												response = new byte[0];
-												break x;
-											}
-										}
-										retCode = 200;
-										response = is.readAllBytes();
-									}
-									
-									
-									int fileLength = response.length;
-									pw.println("HTTP/1.1 " + retCode + " OK");
-									pw.println("Server: EndiLauncher ms callback server");
-									pw.println("Date: " + new Date());
-									pw.println("Content-type: " + "text/html");// or text/html text/plain application/json
-									pw.println("Content-length: " + fileLength);
-									if(redirect != null) {
-										pw.println("Location: "+redirect);
-									}
-									pw.println();
-									pw.flush();
-
-									bos.write(response, 0, fileLength);
-									bos.flush();
-								} catch (Exception e) {
-									e.printStackTrace();
-								} finally {
-									try {
-										in.close();
-									} catch (Exception ex) {
-									}
-									try {
-										pw.close();
-									} catch (Exception ex) {
-									}
-									try {
-										bos.close();
-									} catch (Exception ex) {
-									}
-									try {
-										socket.close();
-									} catch (Exception ex) {
-									}
-									in = null;
-									pw = null;
-									bos = null;
-								}
-							}
-						}).start();
-					}
-				} catch (IOException e) {
-					stopServer();
-					//e.printStackTrace();
-				}
-			}
-		});
-		server.start();
-	}
-
-	public Map<String, List<String>> splitQuery(String query) throws UnsupportedEncodingException {
-		final Map<String, List<String>> query_pairs = new LinkedHashMap<String, List<String>>();
-		final String[] pairs = query.split("&");
-		for (String pair : pairs) {
-			final int idx = pair.indexOf("=");
-			final String key = idx > 0 ? URLDecoder.decode(pair.substring(0, idx), "UTF-8") : pair;
-			if (!query_pairs.containsKey(key)) {
-				query_pairs.put(key, new LinkedList<String>());
-			}
-			final String value = idx > 0 && pair.length() > idx + 1 ? URLDecoder.decode(pair.substring(idx + 1), "UTF-8") : null;
-			query_pairs.get(key).add(value);
-		}
-		return query_pairs;
-	}
-	
 	PropertyChangeSupport pcs = new PropertyChangeSupport(this);
 
 	public void addObserver(String p, PropertyChangeListener l) {

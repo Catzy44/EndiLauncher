@@ -1,4 +1,4 @@
-package me.catzy44.ui.creators;
+package me.catzy44.ui.creators.account;
 
 import java.awt.Color;
 import java.awt.Cursor;
@@ -80,8 +80,7 @@ public class MojangLoginUI {
 						/*UserProfileManager.getActiveProfile().setAk(ak);
 						Interface.setActiveUserProfile(UserProfileManager.getActiveProfile());
 						UserProfileManager.getActiveProfile().getSkin().refreshAsync();*/
-						pcs.firePropertyChange("status",Status.FAILED,Status.SUCCESS);
-						close();
+						finish(Status.SUCCESS);
 					}
 				}).start();
 			}
@@ -92,10 +91,19 @@ public class MojangLoginUI {
 	private PlaceholderPasswordField password;
 	private JButton zaloguj;
 	private JFrame frame;
+	private boolean completed;
 	
 	private void close() {
-		frame.setVisible(false);
-		frame = null;
+		finish(Status.FAILED);
+	}
+
+	private void finish(Status result) {
+		SwingUtilities.invokeLater(() -> {
+			if (completed) return;
+			completed = true;
+			if (frame != null) frame.dispose();
+			pcs.firePropertyChange("status", null, result);
+		});
 	}
 
 	public MinecraftProfile getProfile() {
@@ -119,12 +127,18 @@ public class MojangLoginUI {
 					frame.setUndecorated(true);
 					frame.setBackground(new Color(0, 0, 0, 0));
 					frame.setBounds(screenSize.width / 2 - (w + 61) / 2, screenSize.height / 2 - (h + 114) / 2, w + 61, h + 114);
-					frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+					frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+					frame.addWindowListener(new java.awt.event.WindowAdapter() {
+						@Override
+						public void windowClosing(java.awt.event.WindowEvent e) {
+							close();
+						}
+					});
 					frame.getContentPane().setLayout(null);
 					frame.setUndecorated(true);
 					frame.setBackground(new Color(0, 0, 0, 0));
 					frame.setAlwaysOnTop(true);
-					frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+					frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
 
 					FrameDragListener frameDragListener = new FrameDragListener(frame);
 					frame.addMouseListener(frameDragListener);

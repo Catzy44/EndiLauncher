@@ -1,6 +1,33 @@
 Written from scratch launcher for my mc server.
 Java + Swing.
 
+## Building
+
+The project uses Gradle with Java 25. The Microsoft login callback uses
+`me.catzy:JavaMicroHTTPServer:1.2.0` from Maven Local. First publish the library
+from `~/projects/JavaMicroHTTPServer` with `./gradlew.bat publishToMavenLocal`.
+Then, from the launcher project directory, run:
+
+```powershell
+.\gradlew.bat build
+```
+
+The local HTTP callback can be checked without a Microsoft account after building:
+
+```powershell
+& "$env:JAVA_HOME/bin/java.exe" -cp build/libs/EndiLauncher-1.0.3-all.jar tests/MicrosoftCallbackSmoke.java
+```
+
+This check needs port 22420 to be free and takes about 11 seconds.
+
+The launcher entry point is `me.catzy44.EndiLauncher`; run it with `./gradlew.bat run`.
+
+Local configuration lives in `src/me/catzy44/Constants.java`, which is excluded
+from Git and is never generated or overwritten by Gradle. Set `CONST` for the
+Endi API and `MICROSOFT_CLIENT_ID` / `MICROSOFT_SECRET` for Microsoft login,
+then rebuild. On a fresh checkout, create this class in package `me.catzy44`
+with those three `public static final String` fields.
+
 It's very very very complicated because i didnt want to mess with Mojang EULA.
 Launcher is completing all the game files and all the mods on the client's computer.
 It's also capable od updating itself, updating gamefiles, etc.

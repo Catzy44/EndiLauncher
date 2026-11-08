@@ -111,6 +111,23 @@ public class Utils {
 			}
 		}
 	}
+
+	public static boolean openDirectory(File directory) {
+		if (!directory.exists() && !directory.mkdirs()) {
+			return false;
+		}
+		try {
+			Desktop.getDesktop().open(directory);
+			return true;
+		} catch (Exception e) {
+			try {
+				Runtime.getRuntime().exec(new String[] { "explorer.exe", directory.getAbsolutePath() });
+				return true;
+			} catch (IOException ignored) {
+				return false;
+			}
+		}
+	}
 	public static String removeHTMLTagsFromString(String str) {
 		if(str == null) {return null;}
 		return str.replaceAll("\\<.*?\\>", "");

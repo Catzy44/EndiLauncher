@@ -5,28 +5,15 @@ import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.StringReader;
-import java.net.URL;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.xml.sax.InputSource;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -36,12 +23,14 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 
 import me.catzy44.Interface;
+import me.catzy44.game.installers.InstallationContext;
+import me.catzy44.game.installers.FabricInstaller;
+import me.catzy44.game.installers.ForgeInstaller;
+import me.catzy44.game.installers.VanillaInstaller;
 import me.catzy44.struct.GameVersion;
 import me.catzy44.struct.accounts.MinecraftProfile;
 import me.catzy44.tools.Download;
-import me.catzy44.tools.Unzip;
 import me.catzy44.user.UserProfileManager;
-import me.catzy44.utils.Hash;
 import me.catzy44.utils.SystemInfo;
 import me.catzy44.utils.Utils;
 
@@ -89,8 +78,18 @@ public class GameInstallation {
 		return installationName;
 	}
 
+	public File getGameDirectory() {
+		return gameDir;
+	}
+
+	public File getModsDirectory() {
+		File modsDirectory = new File(gameDir, "mods");
+		mkdirIN(modsDirectory);
+		return modsDirectory;
+	}
+
 	public Download getDownloader() {
-		return down;
+		return installationContext == null ? null : installationContext.getDownloader();
 	}
 
 	public GameInstallation(String installationName, boolean createIfNotExists) {
@@ -208,18 +207,15 @@ public class GameInstallation {
 
 	private Status status = Status.INITIATED;
 	
-	private Download down;
-	private Unzip unzip;
+	private volatile InstallationContext installationContext;
 	
 	private Thread installer;
 	
 	private boolean installingNow = false;
 	
 	public void cancelInstall() {//TODO
-		installer.interrupt();
-		if(down != null) {
-			down.cancel();
-		}
+		if (installer != null) installer.interrupt();
+		if (installationContext != null) installationContext.cancel();
 		//pcs.firePropertyChange("status", status, Status.INSTALLING_FAILED_OTHER);
 	}
 	
@@ -239,34 +235,17 @@ public class GameInstallation {
 					setInstalled(false);
 					setInstallingNow(true);
 
-					pcs.firePropertyChange("status", status, Status.INSTALLING_DOWNLOADING_LIBRARIES);
-					installLibs();//
-					pcs.firePropertyChange("status", status, Status.INSTALLING_DOWNLOADING_ASSETS);
-					installAssets();//
-					installClient();//
+					installationContext = new InstallationContext(instance, manifest, GameInstallation.this::shouldIncludeArgument);
+					new VanillaInstaller(installationContext).install();
 
 					if (ver.isForge()) {
-						installForge();
-						loadVersionManifest();
-						pcs.firePropertyChange("status", status, Status.INSTALLING_DOWNLOADING_FORGE_LIBRARIES);
-						installLibs();
-						installForgeCore();
+						new ForgeInstaller(installationContext).install();
 					} else if(ver.isFabric()) {
-						installFabric();
-						loadVersionManifest();
-						pcs.firePropertyChange("status", status, Status.INSTALLING_DOWNLOADING_FABRIC_LIBRARIES);
-						installLibs();
-						installFabricCore();
-						if(isInstallSodium()) {
-							pcs.firePropertyChange("status", status, Status.INSTALLING_SODIUM);
-							Sodium.installSodium(instance);
-						}
-						if(isInstallFabricAPI()) {
-							pcs.firePropertyChange("status", status, Status.INSTALLING_FABRIC_API);
-							FabricAPI.installFabricAPI(instance);
-						}
+						new FabricInstaller(installationContext).install();
 					}
 
+					manifest = installationContext.manifest;
+					classpath = installationContext.classpath;
 					createCommandline();
 					
 					save();
@@ -313,14 +292,16 @@ public class GameInstallation {
 	}
 
 	public boolean prepareToStart() throws Exception {
-		loadVersionManifest();
+		loadInstalledVersionManifest();
 		buildClasspath();
 		createCommandline();
 		return true;
 	}
 
+	public JsonObject getVersionManifest() { return manifest; }
+
 	String cpCoreEnding = "";
-	private void loadVersionManifest() throws JsonSyntaxException, IOException {
+	public void loadInstalledVersionManifest() throws JsonSyntaxException, IOException {
 		cpCoreEnding = "";
 		
 		File manifestF = new File(gameDir, "versions/" + ver.getProfileName() + "/" + ver.getProfileName() + ".json");
@@ -342,9 +323,12 @@ public class GameInstallation {
 
 			manifest = inherits;
 			
-			cpCoreEnding += new File(gameDir, "versions/" + ver.getProfileName() + "/" + ver.getProfileName() + ".jar").getAbsolutePath();
-			if(!ver.isForge()) {
-				cpCoreEnding +=";"+  new File(gameDir, "versions/" + in + "/" + in + ".jar").getAbsolutePath();
+			if (ver.isForge()) {
+				cpCoreEnding = new File(gameDir, "versions/" + ver.getProfileName() + "/" + ver.getProfileName() + ".jar").getAbsolutePath();
+			} else {
+				// Fabric Loader is already included in libraries. Older installations
+				// also contain a copied loader in the profile directory; do not load it twice.
+				cpCoreEnding = new File(gameDir, "versions/" + in + "/" + in + ".jar").getAbsolutePath();
 			}
 		} else {//vanilla
 			cpCoreEnding +=  new File(gameDir, "versions/" + ver.getMcVersion() + "/" + ver.getMcVersion() + ".jar").getAbsolutePath();
@@ -502,134 +486,9 @@ public class GameInstallation {
 		Interface.reloadPlayBtnText();
 	}
 
-	private boolean installClient() throws Exception {
-		pcs.firePropertyChange("status", status, Status.INSTALLING_DOWNLOADING_CORE);
-		
-		JsonObject json = manifest.get("downloads").getAsJsonObject().get("client").getAsJsonObject();
-		
-		String url = json.get("url").getAsString();
-		String sha1 = json.get("sha1").getAsString();
-		
-		File profile = new File(gameDir,"versions/"+ver.getMcVersion());
-		Utils.mkDirs(profile);
-		Utils.replaceFileContents(new File(profile,ver.getMcVersion()+".json"), manifest.toString());
-		
-		if(Thread.interrupted()) {
-			throw new InterruptedException();
-		}
-		
-		File save = new File(profile,ver.getMcVersion()+".jar");
-		
-		if(save.exists() && save.isFile() && new Hash(save).equals(sha1)) {
-			return true;
-		}
-		
-		down = new Download(new URL(url), save.getAbsolutePath());
-
-		down.addObserver("downloaded", new PropertyChangeListener() {
-			@Override
-			public void propertyChange(PropertyChangeEvent e) {
-				pcs.firePropertyChange("downloaded", e.getOldValue(), e.getNewValue());
-			}
-		});
-
-		/*while (down.getStatus() == Download.DOWNLOADING) {
-			down.waitt(10000);
-		}*/
-		down.locker.waitForUnlock();
-		
-		if(down.getStatus() != Download.COMPLETE) {
-			throw down.getException();
-		}
-		
-		return true;
-	}
 	
-	private boolean installFabricCore() throws IOException {
-		File coreFile = new File(gameDir,"/versions/"+ver.getProfileName()+"/"+ver.getProfileName()+".jar");
-		File from = new File(libsDir, "net/fabricmc/fabric-loader/"+ver.getFabricVersion()+"/fabric-loader-" + ver.getFabricVersion()+".jar");
-		Utils.deleteIfExists(coreFile);
-		Files.copy(from.toPath(), coreFile.toPath());
-		
-		return true;
-	}
 	
-	private boolean installFabric() throws Exception {
-		pcs.firePropertyChange("status", status, Status.INSTALLING_DOWNLOADING_FABRIC);
-		String mavenManifest = Utils.readEverythingFromURL("https://maven.fabricmc.net/net/fabricmc/fabric-installer/maven-metadata.xml");
-		
-		DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-		dbf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-		DocumentBuilder db = dbf.newDocumentBuilder();
-
-        Document doc = db.parse(new InputSource(new StringReader(mavenManifest)));
-        doc.getDocumentElement().normalize();
-        
-        Element versioning = (Element) doc.getElementsByTagName("versioning").item(0);
-        String latest = versioning.getElementsByTagName("latest").item(0).getTextContent();
-        
-        String filename = "fabric-installer-"+latest+".jar";
-        String url = "https://maven.fabricmc.net/net/fabricmc/fabric-installer/"+latest+"/"+filename;
-        
-        if(Thread.interrupted()) {
-			throw new InterruptedException();
-		}
-        
-        File fabricF = new File(gameDir.getAbsolutePath() + "/" + filename);
-        down = new Download(new URL(url), fabricF.getAbsolutePath());
-        fabricF.deleteOnExit();
-
-		down.addObserver("downloaded", new PropertyChangeListener() {
-			@Override
-			public void propertyChange(PropertyChangeEvent e) {
-				pcs.firePropertyChange("downloaded", e.getOldValue(), e.getNewValue());
-			}
-		});
-
-		while (down.getStatus() == Download.DOWNLOADING) {
-			down.waitt(10000);
-		}
-		
-		if(down.getStatus() != Download.COMPLETE) {
-			throw down.getException();
-		}
-		
-		pcs.firePropertyChange("status", status, Status.INSTALLING_INSTALLING_FABRIC);
-		
-		if(Thread.interrupted()) {
-			throw new InterruptedException();
-		}
-		
-		Process fabricInst = Runtime.getRuntime().exec("java -jar "+filename+" client -dir \""+gameDir.getAbsolutePath()+"\" -mcversion "+ver.getMcVersion()+" -noprofile", null, gameDir);
-		BufferedReader bf = new BufferedReader(new InputStreamReader(fabricInst.getInputStream(), "UTF-8"));
-		String line;
-		boolean status = false;
-		while ((line = bf.readLine()) != null) {
-			if (line.equals("Gotowe")) {
-				status = true;
-			}
-			if(line.contains("Installing")) {
-				String[] s = line.split(" ");
-				String fVer = s[4];
-				ver.setFabricVersion(fVer);
-				System.out.println("installed fabric "+fVer);
-			}
-		}
-		
-		Utils.deleteIfExists(fabricF);
-		
-        return status;
-	}
 	
-	private boolean installForgeCore() throws IOException {
-		String forge = ver.getMcVersion() + "-" + ver.getForgeVersion();
-		File from = new File(libsDir, "net/minecraftforge/forge/" + forge + "/forge-" + forge + "-client.jar");
-		File coreFile = new File(gameDir,"/versions/"+ver.getProfileName()+"/"+ver.getProfileName()+".jar");
-		Utils.deleteIfExists(coreFile);
-		Files.copy(from.toPath(), coreFile.toPath());
-		
-		return true;
-	}
 	
 	private void buildClasspath() throws Exception {
 		JsonArray libs = manifest.get("libraries").getAsJsonArray();
@@ -640,49 +499,11 @@ public class GameInstallation {
 			JsonObject lib = libs.get(processed).getAsJsonObject();
 
 			String name = lib.get("name").getAsString();
-			processingArtifact(name);
+			pcs.firePropertyChange("processingArtifact", null, name);
 			
-			// LIBRARIES HAVE OWN RULES!
-			if (lib.get("rules") != null) {
-				for (JsonElement ruleE : lib.get("rules").getAsJsonArray()) {
-					JsonObject rule = ruleE.getAsJsonObject();
-
-					boolean allow = (rule.get("action").getAsString().equals("allow"));
-
-					boolean good2go = true;
-					if (rule.get("os") != null) {
-						JsonObject os = rule.get("os").getAsJsonObject();
-						if (os.get("name") != null) {
-							if (!os.get("name").getAsString().equals(osName)) {
-								good2go = false;
-							}
-						}
-						if (os.get("version") != null) {
-							if (!os.get("version").getAsString().equals(osVersion)) {
-								good2go = false;
-							}
-						}
-						if (os.get("arch") != null) {
-							if (!os.get("arch").getAsString().equals(arch)) {
-								good2go = false;
-							}
-						}
-					}
-					
-					if(allow) {
-						//musi spełniać wszystkie
-						if(!good2go) {
-							completedArtifact(processed,libs.size());
-							continue libs;
-						}
-					} else {
-						//nie moze spełniać żadnego
-						if(good2go) {
-							completedArtifact(processed,libs.size());
-							continue libs;
-						}
-					}
-				}
+			if (!shouldIncludeArgument(lib, new HashMap<String, Boolean>())) {
+				pcs.firePropertyChange("completedArtifact", null, new int[] {processed, libs.size()});
+				continue;
 			}
 			
 			if(lib.get("url") != null) {
@@ -711,365 +532,9 @@ public class GameInstallation {
 		}
 	}
 	
-	private boolean installForge() throws Exception {
-		pcs.firePropertyChange("status", status, Status.INSTALLING_DOWNLOADING_FORGE);
-		
-		Interface.printToConsole("-------------------------------------------------");
-		Interface.printToConsole("  Instalacja forge, to zajmie kilka minut...");
-		Interface.printToConsole("-------------------------------------------------");
-		
-		Thread.sleep(1000);//give user a change to see message
-
-		String forge = ver.getMcVersion() + "-" + ver.getForgeVersion();
-		String filename = "forge-" + forge + "-installer.jar";
-		
-		if(Thread.interrupted()) {
-			throw new InterruptedException();
-		}
-
-		// download forge
-		File forgeF = new File(gameDir.getAbsolutePath() + "/" + filename);
-		down = new Download(new URL("https://maven.minecraftforge.net/net/minecraftforge/forge/" + forge + "/" + filename), forgeF.getAbsolutePath());
-
-		down.addObserver("downloaded", new PropertyChangeListener() {
-			@Override
-			public void propertyChange(PropertyChangeEvent e) {
-				pcs.firePropertyChange("downloaded", e.getOldValue(), e.getNewValue());
-			}
-		});
-
-		/*while (down.getStatus() == Download.DOWNLOADING) {
-			down.waitt(10000);
-		}*/
-		down.locker.waitForUnlock();
-		
-		if(down.getStatus() != Download.COMPLETE) {
-			throw down.getException();
-		}
-
-		// unpack installer
-		File fnm = new File(gameDir, "ForgeNastyInstaller.jar");
-		fnm.deleteOnExit();
-		Utils.unpackFileFromJar("/files/other/ForgeNastyInstaller.jar", fnm);
-		
-		if(Thread.interrupted()) {
-			throw new InterruptedException();
-		}
-
-		pcs.firePropertyChange("status", status, Status.INSTALLING_INSTALLING_FORGE);
-		// run installer
-		Process forgeInst = Runtime.getRuntime().exec("java -cp \"ForgeNastyInstaller.jar;" + filename + "\" me.catzy44.ForgeNastyInstaller \"" + gameDir.getAbsolutePath()+"\"", null, gameDir);
-		BufferedReader bf = new BufferedReader(new InputStreamReader(forgeInst.getInputStream(), "UTF-8"));
-		String line;
-		boolean status = false;
-		while ((line = bf.readLine()) != null) {
-			if (line.equals("NFI SUCCESS")) {
-				status = true;
-			} else {
-				if(line.startsWith("You can delete this")) {
-					continue;
-				}
-				Interface.printToConsole(line);
-			}
-		}
-		forgeF.delete();
-		fnm.delete();
-		return status;
-	}
 	
-	int ta[] = new int[2];
-	private void completedArtifact(int no, int count) {
-		ta[0] = no;
-		ta[1] = count;
-		pcs.firePropertyChange("completedArtifact", null, ta);
-	}
-	private void processingArtifact(String filename) {
-		String[] spl = filename.split("/");
-		pcs.firePropertyChange("processingArtifact", null, spl[spl.length-1]);
-	}
 
-	private void installLibs() throws Exception {
-		JsonArray libs = manifest.get("libraries").getAsJsonArray();
-		classpath = "";
-		libs:
-		for (int processed = 0; processed < libs.size() && !Thread.interrupted(); processed++) {
-			status = Status.INSTALLING_DOWNLOADING_LIBRARIES;
-			JsonObject lib = libs.get(processed).getAsJsonObject();
-
-			String name = lib.get("name").getAsString();
-			processingArtifact(name);
-			
-			// LIBRARIES HAVE OWN RULES!
-			if (lib.get("rules") != null) {
-				for (JsonElement ruleE : lib.get("rules").getAsJsonArray()) {
-					JsonObject rule = ruleE.getAsJsonObject();
-
-					boolean allow = (rule.get("action").getAsString().equals("allow"));
-
-					boolean good2go = true;
-					if (rule.get("os") != null) {
-						JsonObject os = rule.get("os").getAsJsonObject();
-						if (os.get("name") != null) {
-							if (!os.get("name").getAsString().equals(osName)) {
-								good2go = false;
-							}
-						}
-						if (os.get("version") != null) {
-							if (!os.get("version").getAsString().equals(osVersion)) {
-								good2go = false;
-							}
-						}
-						if (os.get("arch") != null) {
-							if (!os.get("arch").getAsString().equals(arch)) {
-								good2go = false;
-							}
-						}
-					}
-					
-					if(allow) {
-						//musi spełniać wszystkie
-						if(!good2go) {
-							completedArtifact(processed, libs.size());
-							continue libs;
-						}
-					} else {
-						//nie moze spełniać żadnego
-						if(good2go) {
-							completedArtifact(processed, libs.size());
-							continue libs;
-						}
-					}
-				}
-			}
-			
-			if(lib.get("url") != null) {
-				//old format
-				String url = lib.get("url").getAsString();
-				String d[] = name.split(":");
-				
-				String path = d[0].replaceAll("\\.", "/");//org.ow2.asm
-				String fname = d[1];//asm-util
-				String version = d[2];//9.2
-				
-				String filename = fname+"-"+version+".jar";
-				
-				String aurl = url+path+"/"+fname+"/"+version+"/"+filename;
-				File saveLocation = new File(libsDir,path+"/"+fname+"/"+version+"/"+filename);
-				
-				Utils.mkDirs(saveLocation.getParentFile());
-				
-				down = new Download(new URL(aurl), saveLocation.getAbsolutePath());
-				down.addObserver("downloaded", new PropertyChangeListener() {
-					@Override
-					public void propertyChange(PropertyChangeEvent e) {
-						pcs.firePropertyChange("downloaded", e.getOldValue(), e.getNewValue());
-					}
-				});
-				/*while (down.getStatus() == Download.DOWNLOADING) {
-					down.waitt(10000);
-				}*/
-				down.locker.waitForUnlock();
-				if(down.getStatus() != Download.COMPLETE) {
-					throw down.getException();
-				}
-				
-				classpath += saveLocation.getAbsolutePath()+";";
-				
-				completedArtifact(processed, libs.size());
-				continue;
-			}
-			
-			if(lib.get("downloads") == null) {
-				continue;
-			}
-			if (lib.get("downloads").getAsJsonObject().get("artifact") != null) {
-
-				JsonObject art = lib.get("downloads").getAsJsonObject().get("artifact").getAsJsonObject();
-				String hash = art.get("sha1").getAsString();
-				xx: {
-					File saveLocation = new File(libsDir, art.get("path").getAsString());
-
-					File parentSaveDir = saveLocation.getParentFile();
-					if (!parentSaveDir.exists() || !parentSaveDir.isDirectory()) {
-						parentSaveDir.mkdirs();
-					}
-
-					classpath += saveLocation.getAbsolutePath() + ";";
-
-					if (saveLocation.exists() && new Hash(saveLocation).toString().equals(hash)) {
-						break xx;
-					}
-					down = new Download(new URL(art.get("url").getAsString()), saveLocation.getAbsolutePath());
-					down.addObserver("downloaded", new PropertyChangeListener() {
-						@Override
-						public void propertyChange(PropertyChangeEvent e) {
-							pcs.firePropertyChange("downloaded", e.getOldValue(), e.getNewValue());
-						}
-					});
-					/*
-					 * while (down.getStatus() == Download.DOWNLOADING) { down.waitt(10000); }
-					 */
-					down.locker.waitForUnlock();
-					if (down.getStatus() != Download.COMPLETE) {
-						if(down.getException() == null) {
-							throw new InterruptedException("Download exception status "+down.getStatus());
-						}
-						throw down.getException();
-					}
-				}
-				if (lib.get("downloads").getAsJsonObject().get("classifiers") == null) {
-					completedArtifact(processed, libs.size());
-					continue;
-				}
-			}
-			
-			if(lib.get("downloads").getAsJsonObject().get("classifiers").getAsJsonObject().get("natives-"+osName) == null) {
-				//System.out.println(lib.get("downloads").getAsJsonObject().get("classifiers"));
-				//TODO ??
-				completedArtifact(processed, libs.size());
-				continue;
-			}
-			
-			JsonObject classifiers = lib.get("downloads").getAsJsonObject().get("classifiers").getAsJsonObject().get("natives-"+osName).getAsJsonObject();
-			xx:
-			{
-				File saveLocation = new File(libsDir, classifiers.get("path").getAsString());
-				String chash = classifiers.get("sha1").getAsString();
-				
-				File parentSaveDir = saveLocation.getParentFile();
-				if(!parentSaveDir.exists() || !parentSaveDir.isDirectory()) {
-					parentSaveDir.mkdirs();
-				}
-				if(saveLocation.exists() && new Hash(saveLocation).toString().equals(chash)) {
-					break xx;
-				}
-				
-				down = new Download(new URL(classifiers.get("url").getAsString()), saveLocation.getAbsolutePath());
-				down.addObserver("downloaded", new PropertyChangeListener() {
-					@Override
-					public void propertyChange(PropertyChangeEvent e) {
-						pcs.firePropertyChange("downloaded", e.getOldValue(), e.getNewValue());
-					}
-				});
-				/*while (down.getStatus() == Download.DOWNLOADING) {
-					down.waitt(10000);
-				}*/
-				down.locker.waitForUnlock();
-				if(down.getStatus() != Download.COMPLETE) {
-					throw down.getException();
-				}
-			}
-			//String[] exc = new String[0];
-			//String regex = "(META-INF\\/|.*\\.git|.*\\.sha1";
-			status = Status.INSTALLING_UNZIPPING_LIBRARY;
-			String regex = "(";
-			excludes: {
-				if (lib.get("extract") == null) {
-					//System.out.println("x!" + lib);
-					break excludes;
-				}
-				JsonObject extract = lib.get("extract").getAsJsonObject();
-
-				JsonArray exclude = extract.get("exclude").getAsJsonArray();
-				//exc = new String[exclude.size()];
-				for (int z = 0; z < exclude.size(); z++) {
-					//exc[z] = exclude.get(z).getAsString();
-					regex += exclude.get(z).getAsString().replace("/", "\\/") + "|";
-				}
-			}
-			regex = regex.substring(0, regex.length()-1);
-			regex += ")";
-			if(regex.length() <= 2) {
-				regex = null;
-			}
-			String extName[] = lib.get("name").getAsString().split(":");
-			
-			File file = new File(libsDir,extName[0].replace(".", "/")+"/"+extName[1]+"/"+extName[2]+"/"+extName[1]+"-"+extName[2]+"-natives-"+osName+".jar");
-			unzip = new Unzip();
-			unzip.addObserver("processedEntry", new PropertyChangeListener() {
-				@Override
-				public void propertyChange(PropertyChangeEvent e) {
-					pcs.firePropertyChange("processedEntry", e.getOldValue(), e.getNewValue());
-				}
-			});
-			unzip.unzip(file, natDir, regex);
-			while (unzip.getStatus() == Unzip.PROCESSING) {
-				unzip.waitt(10000);
-			}
-			completedArtifact(processed, libs.size());
-		}
-	}
 	
-	private void installAssets() throws Exception {
-		JsonObject assetIndex = manifest.get("assetIndex").getAsJsonObject();
-		ver.setAssetsVersion(assetIndex.get("id").getAsString());
-		String assetsIndexDownS = Utils.readEverythingFromURL(assetIndex.get("url").getAsString());
-		JsonObject objects = gson.fromJson(assetsIndexDownS, JsonObject.class).get("objects").getAsJsonObject();
-		{
-			File assetIndexFile = new File(assetsDir, "/indexes/" + assetIndex.get("id").getAsString() + ".json");
-			File assetIndexFileDir = assetIndexFile.getParentFile();
-			if (!assetIndexFileDir.exists() || !assetIndexFileDir.isDirectory()) {
-				assetIndexFileDir.mkdirs();
-			}
-			Utils.replaceFileContents(assetIndexFile, assetsIndexDownS);
-		}
-		Set<Entry<String, JsonElement>> entries = objects.entrySet();
-		
-		int processed = 0;
-		int toProcess = entries.size();
-		
-		for (Entry<String, JsonElement> entry : entries) {
-			if(Thread.interrupted()) {
-				throw new InterruptedException();
-			}
-
-			JsonObject ass = entry.getValue().getAsJsonObject();
-
-			String hash = ass.get("hash").getAsString();
-			// int size = ass.get("size").getAsInt();
-
-			String assetName = hash.substring(0, 2) + "/" + hash;
-			processingArtifact(entry.getKey());
-			
-			File assetFile = new File(assetsDir, "objects/" + assetName);
-			File assetDir = assetFile.getParentFile();
-			if (!assetDir.exists() || !assetDir.isDirectory()) {
-				assetDir.mkdirs();
-			}
-
-			if (assetFile.exists() && new Hash(assetFile).toString().equals(hash)) {
-				processed++;
-				completedArtifact(processed, toProcess);
-				continue;
-			}
-			
-			if(Thread.interrupted()) {
-				throw new InterruptedException();
-			}
-
-			String url = "https://resources.download.minecraft.net/" + assetName;
-			down = new Download(new URL(url), assetFile.getAbsolutePath());
-			down.addObserver("downloaded", new PropertyChangeListener() {
-				@Override
-				public void propertyChange(PropertyChangeEvent e) {
-					pcs.firePropertyChange("downloaded", e.getOldValue(), e.getNewValue());
-				}
-			});
-			/*while (down.getStatus() == Download.DOWNLOADING) {
-				down.waitt(10000);
-			}*/
-			down.locker.waitForUnlock();
-			if(down.getStatus() != Download.COMPLETE) {
-				if(down.getException() != null) {
-					throw down.getException();
-				}
-				throw new InterruptedException("Download exception status: "+down.getStatus());
-			}
-
-			completedArtifact(processed, toProcess);
-			processed++;
-		}
-	}
 	
 	private List<String> jvmCmdArgs = new ArrayList<String>();
 	private List<String> gameCmdArgs = new ArrayList<String>();
@@ -1078,6 +543,10 @@ public class GameInstallation {
 		Map<String,Boolean> curRules = new HashMap<String,Boolean>();
 		curRules.put("is_demo_user",false);
 		curRules.put("has_custom_resolution", false);
+		curRules.put("has_quick_plays_support", false);
+		curRules.put("is_quick_play_singleplayer", false);
+		curRules.put("is_quick_play_multiplayer", false);
+		curRules.put("is_quick_play_realms", false);
 		
 		if(manifest.get("arguments") == null) {
 			gameCmdArgs.clear();
@@ -1108,118 +577,70 @@ public class GameInstallation {
 		
 		gameCmdArgs.clear();
 		JsonArray gameArgs = manifest.get("arguments").getAsJsonObject().get("game").getAsJsonArray();
-		args:
 		for(int i = 0; i < gameArgs.size(); i++) {
 			JsonElement val = gameArgs.get(i);
 			if(val.isJsonPrimitive()) {
 				gameCmdArgs.add(val.getAsString());
-			} else {
-				JsonObject obj = val.getAsJsonObject();
-				for(JsonElement ruleE : obj.get("rules").getAsJsonArray()) {
-					JsonObject rule = ruleE.getAsJsonObject();
-					
-					boolean allow = (rule.get("action").getAsString().equals("allow"));
-					
-					boolean good2go = true;
-					for(Entry<String, JsonElement> featureE : rule.get("features").getAsJsonObject().entrySet()) {
-						String key = featureE.getKey();
-						if(!curRules.containsKey(key)) {
-							System.out.println("UNKNW KEY: "+key);
-							continue;
-						}
-						if(curRules.get(key) != featureE.getValue().getAsBoolean()) {
-							good2go = false;
-							break;
-						}
-					}
-					if(allow) {
-						//musi spełniać wszystkie
-						if(!good2go) {
-							continue args;
-						}
-					} else {
-						//nie moze spełniać żadnego
-						if(good2go) {
-							continue args;
-						}
-					}
-					
-					JsonElement valPrimitive = obj.get("value");
-					if(valPrimitive.isJsonPrimitive()) {
-						gameCmdArgs.add(obj.get("value").getAsString());
-					} else {
-						JsonArray value = obj.get("value").getAsJsonArray();
-
-						for (int z = 0; z < value.size(); z++) {
-							gameCmdArgs.add(value.get(z).getAsString());
-						}
-					}
-				}
+			} else if (shouldIncludeArgument(val.getAsJsonObject(), curRules)) {
+				addArgumentValue(gameCmdArgs, val.getAsJsonObject().get("value"));
 			}
 		}
 		
 		jvmCmdArgs.clear();
 		JsonArray jvmArgs = manifest.get("arguments").getAsJsonObject().get("jvm").getAsJsonArray();
-		args:
 		for(int i = 0; i < jvmArgs.size(); i++) {
 			JsonElement val = jvmArgs.get(i);
 			if(val.isJsonPrimitive()) {
 				jvmCmdArgs.add(val.getAsString());
-			} else {
-				JsonObject obj = val.getAsJsonObject();
-				for(JsonElement ruleE : obj.get("rules").getAsJsonArray()) {
-					JsonObject rule = ruleE.getAsJsonObject();
-					
-					boolean allow = (rule.get("action").getAsString().equals("allow"));
-					
-					boolean good2go = true;
-					if(rule.get("os") != null) {
-						JsonObject os = rule.get("os").getAsJsonObject();
-						if(os.get("name") != null) {
-							if(!os.get("name").getAsString().equals(osName)) {
-								good2go = false;
-								break;
-							}
-						}
-						if(os.get("version") != null) {
-							if(!os.get("version").getAsString().equals(osVersion)) {
-								good2go = false;
-								break;
-							}
-						}
-						if(os.get("arch") != null) {
-							if(!os.get("arch").getAsString().equals(arch)) {
-								good2go = false;
-								break;
-							}
-						}
-					}
-					
-					if(allow) {
-						//musi spełniać wszystkie
-						if(!good2go) {
-							continue args;
-						}
-					} else {
-						//nie moze spełniać żadnego
-						if(good2go) {
-							continue args;
-						}
-					}
-					
-					JsonElement valPrimitive = obj.get("value");
-					if(valPrimitive.isJsonPrimitive()) {
-						jvmCmdArgs.add(obj.get("value").getAsString());
-					} else {
-						JsonArray value = obj.get("value").getAsJsonArray();
+			} else if (shouldIncludeArgument(val.getAsJsonObject(), curRules)) {
+				addArgumentValue(jvmCmdArgs, val.getAsJsonObject().get("value"));
+			}
+		}
+	}
 
-						for (int z = 0; z < value.size(); z++) {
-							jvmCmdArgs.add(value.get(z).getAsString());
-						}
-					}
+	private void addArgumentValue(List<String> target, JsonElement value) {
+		if (value.isJsonPrimitive()) {
+			target.add(value.getAsString());
+			return;
+		}
+		for (JsonElement entry : value.getAsJsonArray()) {
+			target.add(entry.getAsString());
+		}
+	}
+
+	private boolean shouldIncludeArgument(JsonObject argument, Map<String, Boolean> features) {
+		if (argument.get("rules") == null) {
+			return true;
+		}
+
+		boolean allowed = false;
+		for (JsonElement ruleElement : argument.getAsJsonArray("rules")) {
+			JsonObject rule = ruleElement.getAsJsonObject();
+			if (ruleMatches(rule, features)) {
+				allowed = "allow".equals(rule.get("action").getAsString());
+			}
+		}
+		return allowed;
+	}
+
+	private boolean ruleMatches(JsonObject rule, Map<String, Boolean> features) {
+		if (rule.get("os") != null) {
+			JsonObject os = rule.getAsJsonObject("os");
+			if (os.get("name") != null && !os.get("name").getAsString().equals(osName)) {
+				return false;
+			}
+			if (os.get("arch") != null && !os.get("arch").getAsString().equals(arch)) {
+				return false;
+			}
+		}
+		if (rule.get("features") != null) {
+			for (Entry<String, JsonElement> feature : rule.getAsJsonObject("features").entrySet()) {
+				if (features.getOrDefault(feature.getKey(), false) != feature.getValue().getAsBoolean()) {
+					return false;
 				}
 			}
 		}
+		return true;
 	}
 	
 	public boolean isInstallerRunning() {

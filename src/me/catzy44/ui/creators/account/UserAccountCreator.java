@@ -1,4 +1,4 @@
-package me.catzy44.ui.creators;
+package me.catzy44.ui.creators.account;
 
 import java.awt.Color;
 import java.awt.Cursor;
@@ -25,7 +25,6 @@ import me.catzy44.struct.accounts.Microsoft;
 import me.catzy44.struct.accounts.MinecraftProfile;
 import me.catzy44.struct.accounts.MinecraftProfile.Type;
 import me.catzy44.ui.JMultilineLabel;
-import me.catzy44.ui.PlaceholderTextField;
 import me.catzy44.ui.TransparentPanelFixUI;
 import me.catzy44.ui.listeners.AButtonMouseListener;
 import me.catzy44.ui.listeners.ButtonMouseListener;
@@ -42,6 +41,9 @@ public class UserAccountCreator {
 	private static JFrame frame;
 
 	public static void showInterface() {
+		// This wizard is required on first start. Reset the lock so a later
+		// invocation cannot accidentally pass through because of an earlier login.
+		locker.lock();
 		build();
 		show(true);
 
@@ -63,7 +65,7 @@ public class UserAccountCreator {
 
 		Interface.setActiveUserProfile(UserProfileManager.getActiveProfile());
 		UserProfileManager.getActiveProfile().getSkin().refreshAsync();
-		
+
 		Interface.switchCard("konta");
 
 		locker.unlock();
@@ -71,17 +73,60 @@ public class UserAccountCreator {
 
 	private static Locker locker = new Locker();
 
-	private static void startLoginProcess(Type p) {
+	/**
+	 * Re-authenticates an existing launcher profile. Its account type is changed
+	 * only after the selected authentication flow reports success.
+	 */
+	public static void changeExistingProfile(UserProfile profile, Type type) {
+		if (profile == null || profile.getAk().getType() == type) {
+			return;
+		}
+		if (type == Type.NONPREMIUM) {
+			NonPremiumLoginUI.open(Interface.getFrame(), nickname -> applyAccount(profile,
+					new MinecraftProfile(nickname, "uuid", "token", Type.NONPREMIUM)));
+			return;
+		}
+
+		if (type == Type.MICROSOFT) {
+			MicrosoftLoginUI login = new MicrosoftLoginUI();
+			login.addObserver("status", new PropertyChangeListener() {
+				@Override
+				public void propertyChange(PropertyChangeEvent evt) {
+					if (evt.getNewValue() == Microsoft.Status.SUCCESS) {
+						applyAccount(profile, login.getProfile());
+					}
+				}
+			});
+			login.open();
+			return;
+		}
+
+		MojangLoginUI login = new MojangLoginUI();
+		login.addObserver("status", new PropertyChangeListener() {
+			@Override
+			public void propertyChange(PropertyChangeEvent evt) {
+				if (evt.getNewValue() == MojangLoginUI.Status.SUCCESS) {
+					applyAccount(profile, login.getProfile());
+				}
+			}
+		});
+		login.open();
+	}
+
+	private static void applyAccount(UserProfile profile, MinecraftProfile account) {
+		if (account == null) {
+			return;
+		}
+		profile.setAk(account);
+		profile.resetSkin();
+		Interface.setActiveUserProfile(profile);
+		profile.getSkin().refreshAsync();
+	}
+
+	private static void startLoginProcess(Type p, String nonPremiumNickname) {
 		new Thread(new Runnable() {
 			@Override
 			public void run() {
-				String profileName = login.getText();
-				if(profileName == null || profileName.length() == 0) {
-					new Thread(()->{
-						DialogUtil.showConfirmDialog("<font color=red>Musisz wpisać nazwę!</font>");
-					}).start();
-					return;
-				}
 				if (p == Type.MICROSOFT) {
 					show(false);
 					MicrosoftLoginUI login = new MicrosoftLoginUI();
@@ -89,7 +134,7 @@ public class UserAccountCreator {
 						@Override
 						public void propertyChange(PropertyChangeEvent evt) {
 							if (evt.getNewValue() == Microsoft.Status.SUCCESS) {
-								finished(new UserProfile(profileName,login.getProfile(), null));
+								finished(new UserProfile(login.getProfile().getNickname(), login.getProfile(), null));
 							} else {
 								show(true);
 							}
@@ -103,7 +148,7 @@ public class UserAccountCreator {
 						@Override
 						public void propertyChange(PropertyChangeEvent evt) {
 							if (evt.getNewValue() == MojangLoginUI.Status.SUCCESS) {
-								finished(new UserProfile(profileName,login.getProfile(), null));
+								finished(new UserProfile(login.getProfile().getNickname(), login.getProfile(), null));
 							} else {
 								show(true);
 							}
@@ -111,7 +156,8 @@ public class UserAccountCreator {
 					});
 					login.open();
 				} else {
-					finished(new UserProfile(profileName,new MinecraftProfile(profileName, "uuid", "token", Type.NONPREMIUM), null));
+					finished(new UserProfile(nonPremiumNickname,
+							new MinecraftProfile(nonPremiumNickname, "uuid", "token", Type.NONPREMIUM), null));
 				}
 
 			}
@@ -119,7 +165,15 @@ public class UserAccountCreator {
 	}
 
 	private static void show(boolean b) {
-		frame.setVisible(b);
+		javax.swing.SwingUtilities.invokeLater(() -> {
+			if (frame == null || !frame.isDisplayable() && !b)
+				return;
+			frame.setVisible(b);
+			if (b) {
+				frame.toFront();
+				frame.requestFocus();
+			}
+		});
 	}
 
 	public static void Xmain(String args[]) {
@@ -133,7 +187,7 @@ public class UserAccountCreator {
 	private static void build() {
 		try {
 			int w = 350;
-			int h = 330;
+			int h = 180;
 			String title = "Kreator dodawania Profilu";
 			Font buttons = Interface.ralewayBold.deriveFont(15f);
 
@@ -142,7 +196,8 @@ public class UserAccountCreator {
 			frame.setUndecorated(true);
 			frame.setBackground(new Color(0, 0, 0, 0));
 			frame.setBounds(screenSize.width / 2 - (w + 61) / 2, screenSize.height / 2 - (h + 114) / 2, w + 61, h + 114);
-			frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+			// Closing the account selector exits the launcher, including via Alt+F4.
+			frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 			frame.getContentPane().setLayout(null);
 			frame.setUndecorated(true);
 			frame.setBackground(new Color(0, 0, 0, 0));
@@ -152,7 +207,8 @@ public class UserAccountCreator {
 			frame.addMouseListener(frameDragListener);
 			frame.addMouseMotionListener(frameDragListener);
 
-			JLabel label_2 = new JLabel(new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/icon.png"))));
+			JLabel label_2 = new JLabel(
+					new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/icon.png"))));
 			label_2.setBounds(21, 16, 20, 20);
 			frame.getContentPane().add(label_2);
 
@@ -164,18 +220,19 @@ public class UserAccountCreator {
 			frame.getContentPane().add(lblEndimcLauncher);
 
 			ImageIcon Xnormal = new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/x.png")));
-			ImageIcon Xclicked = new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/x_clicked.png")));
-			ImageIcon Xrollover = new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/x_rollover.png")));
+			ImageIcon Xclicked = new ImageIcon(
+					ImageIO.read(Interface.class.getResourceAsStream("/files/images/x_clicked.png")));
+			ImageIcon Xrollover = new ImageIcon(
+					ImageIO.read(Interface.class.getResourceAsStream("/files/images/x_rollover.png")));
 			JButton close = new JButton(Xnormal);
-			close.setDisabledIcon(new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/x_disabled.png"))));
-			close.addMouseListener(new NavButtonMouseListener(close, Xnormal, Xrollover, Xclicked));
+			close.setDisabledIcon(
+					new ImageIcon(ImageIO.read(Interface.class.getResourceAsStream("/files/images/x_disabled.png"))));
 			close.setBounds(w, 16, 38, 13);
+			close.addMouseListener(new NavButtonMouseListener(close, Xnormal, Xrollover, Xclicked));
+			close.setToolTipText("Zamknij launcher");
+			close.addActionListener(e -> frame
+					.dispatchEvent(new java.awt.event.WindowEvent(frame, java.awt.event.WindowEvent.WINDOW_CLOSING)));
 			frame.getContentPane().add(close);
-			close.addActionListener(new ActionListener() {
-				public void actionPerformed(ActionEvent arg0) {
-					show(false);
-				}
-			});
 			close.setContentAreaFilled(false);
 			close.setBorder(null);
 
@@ -187,7 +244,10 @@ public class UserAccountCreator {
 			frame.getContentPane().add(panel);
 			panel.setLayout(null);
 
-			JMultilineLabel lblLogowanieDoKonta = new JMultilineLabel("Wybierz nazwę i typ nowego profilu.\nNazwa nie ma znaczenia, po niej rozpoznasz profil na liście.");
+			JMultilineLabel lblLogowanieDoKonta = new JMultilineLabel(
+					"Wybierz sposób logowania.\nNazwa profilu zostanie pobrana z konta Minecraft.");
+			lblLogowanieDoKonta.setText(
+					"<html align=\"center\" style=\"white-space: nowrap\">\r\n  <head>\r\n    \r\n  </head>\r\n  <body>\r\n    Wybierz rodzaj konta<br>Jeżeli nie masz kupionej gry wybierz brak konta.\r\n  </body>\r\n</html>\r\n");
 			lblLogowanieDoKonta.setBounds(10, 11, 350, 48);
 			lblLogowanieDoKonta.setForeground(Interface.polaText);
 			lblLogowanieDoKonta.setFont(Interface.ralewayBold.deriveFont(12f));
@@ -208,7 +268,7 @@ public class UserAccountCreator {
 					}).start();
 				}
 			});
-			btnZapomnialem.setBounds(219, 362, 141, 13);
+			btnZapomnialem.setBounds(219, 212, 141, 13);
 			panel.add(btnZapomnialem);
 			btnZapomnialem.setContentAreaFilled(false);
 			// btnZapomnialem.setBackground(new Color(0,0,0,0));
@@ -220,14 +280,14 @@ public class UserAccountCreator {
 			btnZapomnialem.setFont(Interface.ralewayBold.deriveFont(11f));
 			btnZapomnialem.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
-			JButton btnRegister = new JButton("Nie masz konta?");
+			JButton btnRegister = new JButton("Kupowanie gry");
 			btnRegister.setHorizontalAlignment(SwingConstants.LEFT);
 			btnRegister.addActionListener(new ActionListener() {
 				public void actionPerformed(ActionEvent arg0) {
 					Utils.openUrl("https://www.xbox.com/en-us/games/store/Minecraft-for-Windows/9NBLGGH2JHXJ");
 				}
 			});
-			btnRegister.setBounds(10, 362, 167, 13);
+			btnRegister.setBounds(10, 212, 167, 13);
 			panel.add(btnRegister);
 			btnRegister.setContentAreaFilled(false);
 			// btnRegister.setBackground(new Color(0,0,0,0));
@@ -239,21 +299,12 @@ public class UserAccountCreator {
 			btnRegister.setFont(Interface.ralewayBold.deriveFont(11f));
 			btnRegister.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
-			JPanel panel_1 = new JPanel();
-			panel_1.setBounds(10, 207, 350, 56);
-			panel.add(panel_1);
-			panel_1.setLayout(null);
-			panel_1.setOpaque(false);
-			panel_1.setUI(new TransparentPanelFixUI());
-			panel_1.setBackground(new Color(0, 0, 0, 0));
-			panel_1.setBorder(BorderFactory.createLineBorder(Interface.borders));
-
-			JButton nonpresmium = new JButton("MICROSOFT");
-			nonpresmium.setBounds(10, 11, 140, 32);
-			panel_1.add(nonpresmium);
+			JButton nonpresmium = new JButton("KONTO MICROSOFT");
+			nonpresmium.setBounds(20, 70, 330, 32);
+			panel.add(nonpresmium);
 			nonpresmium.addActionListener(new ActionListener() {
 				public void actionPerformed(ActionEvent e) {
-					startLoginProcess(Type.MICROSOFT);
+					startLoginProcess(Type.MICROSOFT, null);
 				}
 			});
 			nonpresmium.setContentAreaFilled(false);
@@ -265,24 +316,12 @@ public class UserAccountCreator {
 			nonpresmium.addMouseListener(new ButtonMouseListener(nonpresmium, Interface.buttonsBg));
 			nonpresmium.setFont(buttons);
 
-			JLabel lblNewLabel_1 = new JLabel("Mam konto Microsoft");
-			lblNewLabel_1.setBounds(160, 11, 180, 32);
-			panel_1.add(lblNewLabel_1);
-			lblNewLabel_1.setForeground(Interface.polaText);
-			lblNewLabel_1.setFont(Interface.ralewayMedium.deriveFont(12f));
-
-			JPanel panel_1_1 = new JPanel();
-			panel_1_1.setLayout(null);
-			panel_1_1.setOpaque(false);
-			panel_1_1.setBorder(BorderFactory.createLineBorder(Interface.borders));
-			panel_1_1.setBackground(new Color(0, 0, 0, 0));
-			panel_1_1.setBounds(10, 140, 350, 56);
-			panel.add(panel_1_1);
-
-			JButton nonpresmium_1 = new JButton("MOJANG");
+			JButton nonpresmium_1 = new JButton("KONTO MOJANG");
+			nonpresmium_1.setBounds(20, 113, 330, 32);
+			panel.add(nonpresmium_1);
 			nonpresmium_1.addActionListener(new ActionListener() {
 				public void actionPerformed(ActionEvent e) {
-					startLoginProcess(Type.MOJANG);
+					startLoginProcess(Type.MOJANG, null);
 				}
 			});
 			nonpresmium_1.setContentAreaFilled(false);
@@ -293,28 +332,24 @@ public class UserAccountCreator {
 			nonpresmium_1.setFocusable(false);
 			nonpresmium_1.addMouseListener(new ButtonMouseListener(nonpresmium_1, Interface.buttonsBg));
 			nonpresmium_1.setFont(buttons);
-			nonpresmium_1.setBounds(10, 11, 140, 32);
-			panel_1_1.add(nonpresmium_1);
 
-			JLabel lblNewLabel_1_1 = new JLabel("Mam mail/login i hasło");
-			lblNewLabel_1_1.setForeground(new Color(27, 111, 148));
-			lblNewLabel_1_1.setFont(null);
-			lblNewLabel_1_1.setBounds(160, 11, 180, 32);
-			lblNewLabel_1_1.setFont(Interface.ralewayMedium.deriveFont(12f));
-			panel_1_1.add(lblNewLabel_1_1);
-
-			JPanel panel_1_2 = new JPanel();
-			panel_1_2.setLayout(null);
-			panel_1_2.setOpaque(false);
-			panel_1_2.setBorder(BorderFactory.createLineBorder(Interface.borders));
-			panel_1_2.setBackground(new Color(0, 0, 0, 0));
-			panel_1_2.setBounds(10, 274, 350, 56);
-			panel.add(panel_1_2);
-
-			JButton nonpresmium_2 = new JButton("NONPREMIUM");
+			JButton nonpresmium_2 = new JButton("BRAK KONTA");
+			nonpresmium_2.setBounds(20, 156, 330, 32);
+			panel.add(nonpresmium_2);
 			nonpresmium_2.addActionListener(new ActionListener() {
 				public void actionPerformed(ActionEvent e) {
-					startLoginProcess(Type.NONPREMIUM);
+					// Hide synchronously on the EDT before opening the modal prompt.
+					frame.setVisible(false);
+					boolean[] confirmed = { false };
+					try {
+						NonPremiumLoginUI.open(frame, nickname -> {
+							confirmed[0] = true;
+							startLoginProcess(Type.NONPREMIUM, nickname);
+						});
+					} finally {
+						if (!confirmed[0])
+							show(true);
+					}
 				}
 			});
 			nonpresmium_2.setContentAreaFilled(false);
@@ -325,38 +360,6 @@ public class UserAccountCreator {
 			nonpresmium_2.setFocusable(false);
 			nonpresmium_2.addMouseListener(new ButtonMouseListener(nonpresmium_2, Interface.buttonsBg));
 			nonpresmium_2.setFont(buttons);
-			nonpresmium_2.setBounds(10, 11, 140, 32);
-			panel_1_2.add(nonpresmium_2);
-
-			JLabel lblNewLabel_1_2 = new JLabel("Nie mam konta, wybieram Nick");
-			lblNewLabel_1_2.setForeground(new Color(27, 111, 148));
-			lblNewLabel_1_2.setBounds(160, 11, 180, 32);
-			lblNewLabel_1_2.setFont(Interface.ralewayMedium.deriveFont(12f));
-			panel_1_2.add(lblNewLabel_1_2);
-
-			JPanel panel_1_1_1 = new JPanel();
-			panel_1_1_1.setLayout(null);
-			panel_1_1_1.setOpaque(false);
-			panel_1_1_1.setBorder(BorderFactory.createLineBorder(Interface.borders));
-			panel_1_1_1.setBackground(new Color(0, 0, 0, 0));
-			panel_1_1_1.setBounds(10, 81, 350, 48);
-			panel.add(panel_1_1_1);
-
-			login = new PlaceholderTextField("");
-			login.setText((String) null);
-			login.setPlaceholder("Nazwa...");
-			login.setForeground(new Color(27, 111, 148));
-			login.setColumns(10);
-			login.setBorder(UIUtils.createOffsetedLineBorder(0, 5, 0, 0, Interface.borders));
-			login.setBackground(new Color(34, 34, 34));
-			login.setBounds(10, 11, 168, 25);
-			panel_1_1_1.add(login);
-
-			JLabel lblNewLabel_2 = new JLabel("Max 12 znaków");
-			lblNewLabel_2.setBounds(188, 11, 152, 25);
-			lblNewLabel_2.setFont(Interface.ralewayMedium.deriveFont(12f));
-			lblNewLabel_2.setForeground(Interface.polaText);
-			panel_1_1_1.add(lblNewLabel_2);
 
 			JLabel lblNewLabel = new JLabel(new ImageIcon(DialogUtil.dialogRamkaGenerator(w + 61, h + 114)));
 			lblNewLabel.setBounds(0, 0, w + 61, h + 114);
@@ -369,7 +372,6 @@ public class UserAccountCreator {
 	}
 
 	PropertyChangeSupport pcs = new PropertyChangeSupport(this);
-	private static PlaceholderTextField login;
 
 	public void addObserver(String p, PropertyChangeListener l) {
 		pcs.addPropertyChangeListener(p, l);

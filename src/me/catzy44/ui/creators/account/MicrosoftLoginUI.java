@@ -1,4 +1,4 @@
-package me.catzy44.ui.creators;
+package me.catzy44.ui.creators.account;
 
 import java.awt.Color;
 import java.awt.Cursor;
@@ -19,6 +19,7 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 
 import me.catzy44.Interface;
 import me.catzy44.struct.accounts.Microsoft;
@@ -38,6 +39,14 @@ public class MicrosoftLoginUI {
 	private JDialog frame;
 	private JLabel lblMess;
 	private JButton zaloguj;
+	private volatile boolean completed;
+	private Thread loginWorker;
+
+	private void startLogin() {
+		if (completed || loginWorker != null && loginWorker.isAlive()) return;
+		loginWorker = new Thread(() -> m.login(), "microsoft-login");
+		loginWorker.start();
+	}
 	
 	public void open() {
 		
@@ -51,6 +60,7 @@ public class MicrosoftLoginUI {
 		m.addObserver("status", new PropertyChangeListener() {
 			@Override
 			public void propertyChange(PropertyChangeEvent e) {
+				if (completed || frame == null) return;
 				Status s = (Status) e.getNewValue();
 				Status last = (Status) e.getOldValue();
 				if(last == Status.WAITING_FOR_USER_TO_LOGIN) {
@@ -72,12 +82,14 @@ public class MicrosoftLoginUI {
 						zaloguj.addActionListener(new ActionListener() {
 							@Override
 							public void actionPerformed(ActionEvent e) {
-								closeFrame();
-								pcs.firePropertyChange("status", Status.FAILED, Status.SUCCESS);
+								finish(Status.SUCCESS);
 							}
 						});
 						zaloguj.setEnabled(true);
 						
+						finish(Status.SUCCESS);//szybkie kończenie
+						
+						//dawno nieużywane
 						/*UserProfileManager.getActiveProfile().setAk(m.getAk());
 						Interface.setActiveUserProfile(UserProfileManager.getActiveProfile());
 						UserProfileManager.getActiveProfile().getSkin().refreshAsync();*/
@@ -90,7 +102,7 @@ public class MicrosoftLoginUI {
 						zaloguj.addActionListener(new ActionListener() {
 							@Override
 							public void actionPerformed(ActionEvent e) {
-								m.login();
+								startLogin();
 							}
 						});
 					}
@@ -101,7 +113,6 @@ public class MicrosoftLoginUI {
 				statusLbl.setText(s.getMessage());
 			}
 		});
-		m.login();
 	}
 	
 	public MinecraftProfile getProfile() {
@@ -109,9 +120,20 @@ public class MicrosoftLoginUI {
 	}
 
 	public void closeFrame() {
-		frame.setVisible(false);
-		frame = null;
-		pcs.firePropertyChange("status", Status.FAILED, Status.FAILED);
+		finish(Status.FAILED);
+	}
+
+	private void finish(Status result) {
+		SwingUtilities.invokeLater(() -> {
+			if (completed) return;
+			completed = true;
+			if (result == Status.FAILED) {
+				if (loginWorker != null) loginWorker.interrupt();
+				if (m != null) m.stopServer();
+			}
+			if (frame != null) frame.dispose();
+			pcs.firePropertyChange("status", null, result);
+		});
 	}
 
 	/**
@@ -121,18 +143,24 @@ public class MicrosoftLoginUI {
 		try {
 
 			int w = 240;
-			int h = 140;
+			int h = 80;
 
 			Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
 			
-			frame = new JDialog(SwingUtilities.windowForComponent(Interface.getFrame()),"",Dialog.ModalityType.APPLICATION_MODAL);
+			frame = new JDialog(SwingUtilities.windowForComponent(Interface.getFrame()), "", Dialog.ModalityType.APPLICATION_MODAL);
 			frame.setUndecorated(true);
 			frame.setBackground(new Color(0, 0, 0, 0));
 			frame.setBounds(screenSize.width / 2 - (w + 61) / 2, screenSize.height / 2 - (h + 114) / 2, w + 61, h + 114);
 			frame.getContentPane().setLayout(null);
 			frame.setUndecorated(true);
 			frame.setBackground(new Color(0, 0, 0, 0));
-			frame.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+			frame.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
+			frame.addWindowListener(new java.awt.event.WindowAdapter() {
+				@Override
+				public void windowClosing(java.awt.event.WindowEvent e) {
+					closeFrame();
+				}
+			});
 
 			DialogDragListener frameDragListener = new DialogDragListener(frame);
 			frame.addMouseListener(frameDragListener);
@@ -142,8 +170,9 @@ public class MicrosoftLoginUI {
 			label_2.setBounds(21, 16, 20, 20);
 			frame.getContentPane().add(label_2);
 
-			JLabel lblEndimcLauncher = new JLabel(Interface.name + " Launcher");
-			lblEndimcLauncher.setBounds(49, 15, 162, 19);
+			JLabel lblEndimcLauncher = new JLabel("Microsoft - Logowanie");
+			lblEndimcLauncher.setHorizontalAlignment(SwingConstants.CENTER);
+			lblEndimcLauncher.setBounds(68, 16, 162, 19);
 			lblEndimcLauncher.setFont(Interface.ralewayBold.deriveFont(12f));
 			lblEndimcLauncher.setForeground(Interface.polaText);
 			frame.getContentPane().add(lblEndimcLauncher);
@@ -172,12 +201,6 @@ public class MicrosoftLoginUI {
 			frame.getContentPane().add(panel);
 			panel.setLayout(null);
 
-			JLabel lblLogowanieDoKonta = new JLabel("Logowanie do konta Microsoft", SwingConstants.CENTER);
-			lblLogowanieDoKonta.setBounds(10, 11, 240, 25);
-			lblLogowanieDoKonta.setForeground(Interface.polaText);
-			lblLogowanieDoKonta.setFont(Interface.ralewayBold.deriveFont(12f));
-			panel.add(lblLogowanieDoKonta);
-
 			JButton btnZapomnialem = new JButton("Zapomniałem hasła");
 			btnZapomnialem.addActionListener(new ActionListener() {
 				public void actionPerformed(ActionEvent arg0) {
@@ -192,7 +215,7 @@ public class MicrosoftLoginUI {
 					}).start();
 				}
 			});
-			btnZapomnialem.setBounds(109, 162, 140, 13);
+			btnZapomnialem.setBounds(110, 112, 140, 13);
 			panel.add(btnZapomnialem);
 			btnZapomnialem.setContentAreaFilled(false);
 			// btnZapomnialem.setBackground(new Color(0,0,0,0));
@@ -210,7 +233,7 @@ public class MicrosoftLoginUI {
 					closeFrame();
 				}
 			});
-			btnRegister.setBounds(10, 162, 89, 13);
+			btnRegister.setBounds(11, 112, 89, 13);
 			panel.add(btnRegister);
 			btnRegister.setContentAreaFilled(false);
 			// btnRegister.setBackground(new Color(0,0,0,0));
@@ -228,7 +251,7 @@ public class MicrosoftLoginUI {
 					Utils.openUrl(m.getStage1Str());
 				}
 			});
-			zaloguj.setBounds(10, 128, 239, 23);
+			zaloguj.setBounds(11, 78, 239, 23);
 			panel.add(zaloguj);
 			zaloguj.setContentAreaFilled(false);
 			zaloguj.setBackground(Interface.buttonsBg);
@@ -240,14 +263,14 @@ public class MicrosoftLoginUI {
 			zaloguj.setFont(Interface.ralewayBold.deriveFont(14f));
 			
 			lblMess = new JLabel("Strona logowania została otwarta");
-			lblMess.setBounds(10, 47, 240, 25);
+			lblMess.setBounds(11, 11, 240, 25);
 			lblMess.setForeground(Interface.polaText);
 			lblMess.setFont(Interface.ralewayBold.deriveFont(12f));
 			lblMess.setHorizontalAlignment(JLabel.CENTER);
 			panel.add(lblMess);
 			
-			statusLbl = new JLabel("");
-			statusLbl.setBounds(10, 83, 240, 14);
+			statusLbl = new JLabel("Oczekiwanie");
+			statusLbl.setBounds(10, 47, 240, 14);
 			statusLbl.setForeground(Interface.polaText);
 			statusLbl.setFont(Interface.ralewayBold.deriveFont(12f));
 			statusLbl.setHorizontalAlignment(JLabel.CENTER);
@@ -257,6 +280,14 @@ public class MicrosoftLoginUI {
 			lblNewLabel.setBounds(0, 0, w + 61, h + 114);
 			frame.getContentPane().add(lblNewLabel);
 
+			// A modal dialog enters its nested event loop only after becoming
+			// visible. Starting OAuth from this timer ensures this message is
+			// painted before the browser is opened.
+			Timer startLogin = new Timer(150, e -> {
+				startLogin();
+			});
+			startLogin.setRepeats(false);
+			startLogin.start();
 			frame.setVisible(true);
 		} catch (Exception e) {
 			e.printStackTrace();
